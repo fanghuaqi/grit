@@ -5,6 +5,17 @@ class TestActor < Test::Unit::TestCase
 
   end
 
+  # output
+  def test_output_adds_tz_offset
+    t = Time.now
+    a = Actor.new("Tom Werner", "tom@example.com")
+    pieces = a.output(t).split(" ")
+    offset = pieces.pop
+    output = pieces * ' '
+    assert_equal "Tom Werner <tom@example.com> #{t.to_i}", output
+    assert_match /-?\d{4}/, offset
+  end
+
   # from_string
 
   def test_from_string_should_separate_name_and_email

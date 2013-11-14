@@ -9,22 +9,19 @@ require 'timeout'
 require 'logger'
 require 'digest/sha1'
 
-
-if defined? RUBY_ENGINE && RUBY_ENGINE == 'jruby'
-  require 'open3'
-elsif RUBY_PLATFORM.downcase =~ /mswin(?!ce)|mingw|bccwin/
-  require 'win32/open3'
-else
-  require 'open3_detach'
-end
-
 # third party
-require 'rubygems'
+
 begin
-  gem "mime-types", ">=0"
   require 'mime/types'
-rescue Gem::LoadError => e
-  puts "WARNING: Gem LoadError: #{e.message}"
+  require 'rubygems'
+rescue LoadError
+  require 'rubygems'
+  begin
+    gem "mime-types", ">=0"
+    require 'mime/types'
+  rescue Gem::LoadError => e
+    puts "WARNING: Gem LoadError: #{e.message}"
+  end
 end
 
 # ruby 1.9 compatibility
@@ -51,12 +48,15 @@ require 'grit/submodule'
 require 'grit/blame'
 require 'grit/merge'
 
-
 module Grit
+  VERSION = '2.5.0'
+
   class << self
     # Set +debug+ to true to log all git calls and responses
     attr_accessor :debug
     attr_accessor :use_git_ruby
+    attr_accessor :no_quote
+
     # The standard +logger+ for debugging git calls - this defaults to a plain STDOUT logger
     attr_accessor :logger
     def log(str)
@@ -65,11 +65,11 @@ module Grit
   end
   self.debug = false
   self.use_git_ruby = true
+  self.no_quote = false
 
   @logger ||= ::Logger.new(STDOUT)
 
   def self.version
-    yml = YAML.load(File.read(File.join(File.dirname(__FILE__), *%w[.. VERSION.yml])))
-    "#{yml[:major]}.#{yml[:minor]}.#{yml[:patch]}"
+    VERSION
   end
 end

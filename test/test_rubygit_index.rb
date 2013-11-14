@@ -22,6 +22,54 @@ class TestRubyGitIndex < Test::Unit::TestCase
     File.join(tmp_path, 'dot_git_iv2')
   end
 
+  def test_set_default_committed_date
+    parents = [@git.commits.first]
+    sha     = @git.index.commit('message', parents, @user, nil, 'master')
+    commit  = @git.commit(sha)
+    now     = Time.now
+    assert_equal now.year,  commit.committed_date.year
+    assert_equal now.month, commit.committed_date.month
+    assert_equal now.day,   commit.committed_date.day
+  end
+
+  def test_set_actor
+    parents = [@git.commits.first]
+    sha     = @git.index.commit('message', parents, @user)
+
+    commit  = @git.commit(sha)
+    assert_equal @user.name, commit.committer.name
+    assert_equal @user.name, commit.author.name
+  end
+
+  def test_allow_custom_committed_and_authored_dates
+    parents = [@git.commits.first]
+    sha     = @git.index.commit 'message', 
+                :committed_date => Time.local(2000),
+                :authored_date  => Time.local(2001),
+                :parents        => parents, 
+                :actor          => @user, 
+                :head           => 'master'
+
+    commit  = @git.commit(sha)
+    now     = Time.now
+    assert_equal 2000,  commit.committed_date.year
+    assert_equal 2001,  commit.authored_date.year
+  end
+
+  def test_allow_custom_committers_and_authors
+    parents = [@git.commits.first]
+    sha     = @git.index.commit 'message', 
+                :committer => Grit::Actor.new('abc', nil),
+                :author    => Grit::Actor.new('def', nil),
+                :parents   => parents, 
+                :head      => 'master'
+
+    commit  = @git.commit(sha)
+    assert_equal parents.map { |c| c.sha }, commit.parents.map { |c| c.sha }
+    assert_equal 'abc', commit.committer.name
+    assert_equal 'def', commit.author.name
+  end
+
   def test_add_files
     sha = @git.commits.first.tree.id
 

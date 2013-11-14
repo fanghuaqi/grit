@@ -123,6 +123,41 @@ class TestRepo < Test::Unit::TestCase
     assert_equal "Merge branch 'site'", c.short_message
   end
 
+  def test_commit_batch
+    commits = @r.batch('4c8124ffcf4039d292442eeccabdeca5af5c5017',
+      '634396b2f541a9f2d58b00be1a07f0c358b999b3')
+    assert_equal "4c8124ffcf4039d292442eeccabdeca5af5c5017", commits[0].id
+    assert_equal "634396b2f541a9f2d58b00be1a07f0c358b999b3", commits[1].id
+    assert_equal "tom@mojombo.com", commits[0].author.email
+    assert_equal "tom@mojombo.com", commits[1].author.email
+  end
+
+  def test_commit_batch_with_non_commit_objects
+    commits = @r.batch(
+      '4c8124ffcf4039d292442eeccabdeca5af5c5017',
+      '608b0482499341bd2fe32002192936f7241a8569', # this is a blob SHA1
+      '634396b2f541a9f2d58b00be1a07f0c358b999b3'
+    )
+    assert_equal 3, commits.size
+    assert_nil commits[1]
+    assert_equal "4c8124ffcf4039d292442eeccabdeca5af5c5017", commits[0].id
+    assert_equal "634396b2f541a9f2d58b00be1a07f0c358b999b3", commits[2].id
+    assert_equal "tom@mojombo.com", commits[0].author.email
+    assert_equal "tom@mojombo.com", commits[2].author.email
+  end
+
+  # generate enough input to overflow the max pipe input buffer. this will cause
+  # the git child process hang if stdin is not written at the same time as stdout
+  # is being read.
+  #
+  # The pipe buffer is 32K on Mac, 64K on Linux 2.6.
+  def test_large_commit_batch
+    fail if jruby?
+    n = 1000 # 41K of input
+    commits = @r.batch(['4c8124ffcf4039d292442eeccabdeca5af5c5017'] * n)
+    assert_equal n, commits.size
+  end
+
   # commit_count
 
   def test_commit_count
@@ -157,14 +192,27 @@ class TestRepo < Test::Unit::TestCase
     assert_equal "Hello world", blob.data
   end
 
+  # init
+
+  def test_init
+    FileUtils.stubs(:mkdir_p)
+
+    Git.any_instance.expects(:init).with({:base => false}, "/foo/bar").returns(true)
+    Repo.expects(:new).with("/foo/bar", {})
+    Repo.init("/foo/bar")
+  end
+
   # init_bare
 
   def test_init_bare
     FileUtils.stubs(:mkdir_p)
 
-    Git.any_instance.expects(:init).returns(true)
-    Repo.expects(:new).with("/foo/bar.git", {})
+    Git.any_instance.expects(:init).with(:bare => true).returns(true).twice
+    Repo.expects(:new).with("/foo/bar.git", {:is_bare => true})
     Repo.init_bare("/foo/bar.git")
+
+    Repo.expects(:new).with("/foo/bar", {:is_bare => true})
+    Repo.init_bare("/foo/bar")
   end
 
   def test_init_bare_with_options
@@ -172,7 +220,7 @@ class TestRepo < Test::Unit::TestCase
 
     Git.any_instance.expects(:init).with(
       :bare => true, :template => "/baz/sweet").returns(true)
-    Repo.expects(:new).with("/foo/bar.git", {})
+    Repo.expects(:new).with("/foo/bar.git", {:is_bare => true})
     Repo.init_bare("/foo/bar.git", :template => "/baz/sweet")
   end
 
@@ -213,6 +261,13 @@ class TestRepo < Test::Unit::TestCase
 
     Git.any_instance.expects(:diff).with({}, 'master^', 'master', '--', 'foo/bar', 'foo/baz')
     @r.diff('master^', 'master', 'foo/bar', 'foo/baz')
+  end
+
+  def test_diff2
+    Git.any_instance.expects(:native).with('diff', {}, 'a', 'b', '--').returns(fixture('diff_p'))
+    diffs = @r.diff('a', 'b')
+
+    assert_equal 15, diffs.size
   end
 
   # commit_diff
@@ -262,14 +317,13 @@ class TestRepo < Test::Unit::TestCase
   # alternates
 
   def test_alternates_with_two_alternates
-    File.expects(:exist?).with("#{absolute_project_path}/.git/objects/info/alternates").returns(true)
     File.expects(:read).with("#{absolute_project_path}/.git/objects/info/alternates").returns("/path/to/repo1/.git/objects\n/path/to/repo2.git/objects\n")
 
     assert_equal ["/path/to/repo1/.git/objects", "/path/to/repo2.git/objects"], @r.alternates
   end
 
   def test_alternates_no_file
-    File.expects(:exist?).returns(false)
+    File.expects(:read).raises(Errno::ENOENT)
 
     assert_equal [], @r.alternates
   end

@@ -2,24 +2,41 @@ module Grit
 
   class Repo
     DAEMON_EXPORT_FILE = 'git-daemon-export-ok'
+    BATCH_PARSERS      = {
+      'commit' => ::Grit::Commit
+    }
 
-    # The path of the git repo as a String
+    # Public: The String path of the Git repo.
     attr_accessor :path
+
+    # Public: The String path to the working directory of the repo, or nil if
+    # there is no working directory.
     attr_accessor :working_dir
+
+    # Public: The Boolean of whether or not the repo is bare.
     attr_reader :bare
 
-    # The git command line interface object
+    # Public: The Grit::Git command line interface object.
     attr_accessor :git
 
-    # Create a new Repo instance
-    #   +path+ is the path to either the root git directory or the bare git repo
-    #   +options+ :is_bare force to load a bare repo
+    # Public: Create a new Repo instance.
+    #
+    # path    - The String path to either the root git directory or the bare
+    #           git repo. Bare repos are expected to end with ".git".
+    # options - A Hash of options (default: {}):
+    #           :is_bare - Boolean whether to consider the repo as bare even
+    #                      if the repo name does not end with ".git".
     #
     # Examples
-    #   g = Repo.new("/Users/tom/dev/grit")
-    #   g = Repo.new("/Users/tom/public/grit.git")
     #
-    # Returns Grit::Repo
+    #   r = Repo.new("/Users/tom/dev/normal")
+    #   r = Repo.new("/Users/tom/public/bare.git")
+    #   r = Repo.new("/Users/tom/public/bare", {:is_bare => true})
+    #
+    # Returns a newly initialized Grit::Repo.
+    # Raises Grit::InvalidGitRepositoryError if the path exists but is not
+    #   a Git repository.
+    # Raises Grit::NoSuchPathError if the path does not exist.
     def initialize(path, options = {})
       epath = File.expand_path(path)
 
@@ -39,12 +56,142 @@ module Grit
       self.git = Git.new(self.path)
     end
 
-    # Does nothing yet...
-    def self.init(path)
-      # !! TODO !!
-      # create directory
-      # generate initial git directory
-      # create new Grit::Repo on that dir, return it
+    # Public: Initialize a git repository (create it on the filesystem). By
+    # default, the newly created repository will contain a working directory.
+    # If you would like to create a bare repo, use Grit::Repo.init_bare.
+    #
+    # path         - The String full path to the repo. Traditionally ends with
+    #                "/<name>.git".
+    # git_options  - A Hash of additional options to the git init command
+    #                (default: {}).
+    # repo_options - A Hash of additional options to the Grit::Repo.new call
+    #                (default: {}).
+    #
+    # Examples
+    #
+    #   Grit::Repo.init('/var/git/myrepo.git')
+    #
+    # Returns the newly created Grit::Repo.
+    def self.init(path, git_options = {}, repo_options = {})
+      git_options = {:base => false}.merge(git_options)
+      git = Git.new(path)
+      git.fs_mkdir('..')
+      git.init(git_options, path)
+      self.new(path, repo_options)
+    end
+
+    # Public: Initialize a bare git repository (create it on the filesystem).
+    #
+    # path         - The String full path to the repo. Traditionally ends with
+    #                "/<name>.git".
+    # git_options  - A Hash of additional options to the git init command
+    #                (default: {}).
+    # repo_options - A Hash of additional options to the Grit::Repo.new call
+    #                (default: {}).
+    #
+    # Examples
+    #
+    #   Grit::Repo.init_bare('/var/git/myrepo.git')
+    #
+    # Returns the newly created Grit::Repo.
+    def self.init_bare(path, git_options = {}, repo_options = {})
+      git_options = {:bare => true}.merge(git_options)
+      git = Git.new(path)
+      git.fs_mkdir('..')
+      git.init(git_options)
+      repo_options = {:is_bare => true}.merge(repo_options)
+      self.new(path, repo_options)
+    end
+
+    # Public: Initialize a bare Git repository (create it on the filesystem)
+    # or, if the repo already exists, simply return it.
+    #
+    # path         - The String full path to the repo. Traditionally ends with
+    #                "/<name>.git".
+    # git_options  - A Hash of additional options to the git init command
+    #                (default: {}).
+    # repo_options - A Hash of additional options to the Grit::Repo.new call
+    #                (default: {}).
+    #
+    # Returns the new or existing Grit::Repo.
+    def self.init_bare_or_open(path, git_options = {}, repo_options = {})
+      git = Git.new(path)
+
+      unless git.exist?
+        git.fs_mkdir(path)
+        git.init(git_options)
+      end
+
+      self.new(path, repo_options)
+    end
+
+    # Public: Create a bare fork of this repository.
+    #
+    # path    - The String full path of where to create the new fork.
+    #           Traditionally ends with "/<name>.git".
+    # options - The Hash of additional options to the git clone command.
+    #           These options will be merged on top of the default Hash:
+    #           {:bare => true, :shared => true}.
+    #
+    # Returns the newly forked Grit::Repo.
+    def fork_bare(path, options = {})
+      default_options = {:bare => true, :shared => true}
+      real_options = default_options.merge(options)
+      Git.new(path).fs_mkdir('..')
+      self.git.clone(real_options, self.path, path)
+      Repo.new(path)
+    end
+
+    # Public: Fork a bare git repository from another repo.
+    #
+    # path    - The String full path of the repo from which to fork..
+    #           Traditionally ends with "/<name>.git".
+    # options - The Hash of additional options to the git clone command.
+    #           These options will be merged on top of the default Hash:
+    #           {:bare => true, :shared => true}.
+    #
+    # Returns the newly forked Grit::Repo.
+    def fork_bare_from(path, options = {})
+      default_options = {:bare => true, :shared => true}
+      real_options = default_options.merge(options)
+      Git.new(self.path).fs_mkdir('..')
+      self.git.clone(real_options, path, self.path)
+      Repo.new(self.path)
+    end
+
+    # Public: Return the full Git objects from the given SHAs.  Only Commit
+    # objects are parsed for now.
+    #
+    # *shas - Array of String SHAs.
+    #
+    # Returns an Array of Grit objects (Grit::Commit).
+    def batch(*shas)
+      shas.flatten!
+      text = git.native(:cat_file, {:batch => true, :input => (shas * "\n")})
+      parse_batch(text)
+    end
+
+    # Parses `git cat-file --batch` output, returning an array of Grit objects.
+    #
+    # text - Raw String output.
+    #
+    # Returns an Array of Grit objects (Grit::Commit).
+    def parse_batch(text)
+      io = StringIO.new(text)
+      objects = []
+      while line = io.gets
+        sha, type, size = line.split(" ", 3)
+        parser = BATCH_PARSERS[type]
+        if type == 'missing' || !parser
+          io.seek(size.to_i + 1, IO::SEEK_CUR)
+          objects << nil
+          next
+        end
+
+        object   = io.read(size.to_i + 1)
+        objects << parser.parse_batch(self, sha, size, object)
+      end
+      objects
     end
 
     # The project's description. Taken verbatim from GIT_REPO/description
@@ -57,7 +204,6 @@ module Grit
     def blame(file, commit = nil)
       Blame.new(self, file, commit)
     end
-
 
     # An array of Head objects representing the branch heads in
     # this repo
@@ -132,6 +278,30 @@ module Grit
       Tag.find_all(self)
     end
 
+    # Finds the most recent annotated tag name that is reachable from a commit.
+    #
+    #   @repo.recent_tag_name('master')
+    #   # => "v1.0-0-abcdef"
+    #
+    # committish - optional commit SHA, branch, or tag name.
+    # options    - optional hash of options to pass to git.
+    #              Default: {:always => true}
+    #              :tags => true      # use lightweight tags too.
+    #              :abbrev => Integer # number of hex digits to form the unique
+    #                name.  Defaults to 7.
+    #              :long => true      # always output tag + commit sha
+    #              # see `git describe` docs for more options.
+    #
+    # Returns the String tag name, or just the commit if no tag is
+    # found.  If there have been updates since the tag was made, a
+    # suffix is added with the number of commits since the tag, and
+    # the abbreviated object name of the most recent commit.
+    # Returns nil if the committish value is not found.
+    def recent_tag_name(committish = nil, options = {})
+      value = git.describe({:always => true}.update(options), committish.to_s).to_s.strip
+      value.size.zero? ? nil : value
+    end
+
     # An array of Remote objects representing the remote branches in
     # this repo
     #
@@ -176,6 +346,21 @@ module Grit
       [ Head.find_all(self), Tag.find_all(self), Remote.find_all(self) ].flatten
     end
 
+    # returns an array of hashes representing all references
+    def refs_list
+      refs = self.git.for_each_ref
+      refarr = refs.split("\n").map do |line|
+        shatype, ref = line.split("\t")
+        sha, type = shatype.split(' ')
+        [ref, sha, type]
+      end
+      refarr
+    end
+
+    def delete_ref(ref)
+      self.git.native(:update_ref, {:d => true}, ref)
+    end
+
     def commit_stats(start = 'master', max_count = 10, skip = 0)
       options = {:max_count => max_count,
                  :skip => skip}
@@ -206,10 +391,15 @@ module Grit
       Commit.find_all(self, "#{from}..#{to}").reverse
     end
 
+    def fast_forwardable?(to, from)
+      mb = self.git.native(:merge_base, {}, [to, from]).strip
+      mb == from
+    end
+
     # The Commits objects that are newer than the specified date.
     # Commits are returned in chronological order.
     #   +start+ is the branch/commit name (default 'master')
-    #   +since+ is a string represeting a date/time
+    #   +since+ is a string representing a date/time
     #   +extra_options+ is a hash of extra options
     #
     # Returns Grit::Commit[] (baked)
@@ -246,14 +436,51 @@ module Grit
       repo_refs       = self.git.rev_list({}, ref).strip.split("\n")
       other_repo_refs = other_repo.git.rev_list({}, other_ref).strip.split("\n")
 
-      (other_repo_refs - repo_refs).map do |ref|
-        Commit.find_all(other_repo, ref, {:max_count => 1}).first
+      (other_repo_refs - repo_refs).map do |refn|
+        Commit.find_all(other_repo, refn, {:max_count => 1}).first
       end
+    end
+
+    def objects(refs)
+      refs = refs.split(/\s+/) if refs.respond_to?(:to_str)
+      self.git.rev_list({:objects => true, :timeout => false}, *refs).
+        split("\n").map { |a| a[0, 40] }
+    end
+
+    def commit_objects(refs)
+      refs = refs.split(/\s+/) if refs.respond_to?(:to_str)
+      self.git.rev_list({:timeout => false}, *refs).split("\n").map { |a| a[0, 40] }
+    end
+
+    def objects_between(ref1, ref2 = nil)
+      if ref2
+        refs = "#{ref2}..#{ref1}"
+      else
+        refs = ref1
+      end
+      self.objects(refs)
+    end
+
+    def diff_objects(commit_sha, parents = true)
+      revs = []
+      Grit.no_quote = true
+      if parents
+        # PARENTS:
+        revs = self.git.diff_tree({:timeout => false, :r => true, :t => true, :m => true}, commit_sha).
+          strip.split("\n").map{ |a| r = a.split(' '); r[3] if r[1] != '160000' }
+      else
+        # NO PARENTS:
+        revs = self.git.native(:ls_tree, {:timeout => false, :r => true, :t => true}, commit_sha).
+          split("\n").map{ |a| a.split("\t").first.split(' ')[2] }
+      end
+      revs << self.commit(commit_sha).tree.id
+      Grit.no_quote = false
+      return revs.uniq.compact
     end
 
     # The Tree object for the given treeish reference
     #   +treeish+ is the reference (default 'master')
-    #   +paths+ is an optional Array of directory paths to restrict the tree (deafult [])
+    #   +paths+ is an optional Array of directory paths to restrict the tree (default [])
     #
     # Examples
     #   repo.tree('master', ['lib/'])
@@ -261,6 +488,43 @@ module Grit
     # Returns Grit::Tree (baked)
     def tree(treeish = 'master', paths = [])
       Tree.construct(self, treeish, paths)
+    end
+
+    # quick way to get a simple array of hashes of the entries
+    # of a single tree or recursive tree listing from a given
+    # sha or reference
+    #   +treeish+ is the reference (default 'master')
+    #   +options+ is a hash or options - currently only takes :recursive
+    #
+    # Examples
+    #   repo.lstree('master', :recursive => true)
+    #
+    # Returns array of hashes - one per tree entry
+    def lstree(treeish = 'master', options = {})
+      # check recursive option
+      opts = {:timeout => false, :l => true, :t => true}
+      if options[:recursive]
+        opts[:r] = true
+      end
+      # mode, type, sha, size, path
+      revs = self.git.native(:ls_tree, opts, treeish)
+      lines = revs.split("\n")
+      revs = lines.map do |a|
+        stuff, path = a.split("\t")
+        mode, type, sha, size = stuff.split(" ")
+        entry = {:mode => mode, :type => type, :sha => sha, :path => path}
+        entry[:size] = size.strip.to_i if size.strip != '-'
+        entry
+      end
+      revs
+    end
+
+    def object(sha)
+      obj = git.get_git_object(sha)
+      raw = Grit::GitRuby::Internal::RawObject.new(obj[:type], obj[:content])
+      object = Grit::GitRuby::GitObject.from_raw(raw)
+      object.sha = sha
+      object
     end
 
     # The Blob object for the given id
@@ -287,7 +551,14 @@ module Grit
     #   +b+ is the other commit
     #   +paths+ is an optional list of file paths on which to restrict the diff
     def diff(a, b, *paths)
-      self.git.diff({}, a, b, '--', *paths)
+      diff = self.git.native('diff', {}, a, b, '--', *paths)
+
+      if diff =~ /diff --git a/
+        diff = diff.sub(/.*?(diff --git a)/m, '\1')
+      else
+        diff = ''
+      end
+      Diff.list_from_string(self, diff)
     end
 
     # The commit diff for the given commit
@@ -296,48 +567,6 @@ module Grit
     # Returns Grit::Diff[]
     def commit_diff(commit)
       Commit.diff(self, commit)
-    end
-
-    # Initialize a bare git repository at the given path
-    #   +path+ is the full path to the repo (traditionally ends with /<name>.git)
-    #   +options+ is any additional options to the git init command
-    #
-    # Examples
-    #   Grit::Repo.init_bare('/var/git/myrepo.git')
-    #
-    # Returns Grit::Repo (the newly created repo)
-    def self.init_bare(path, git_options = {}, repo_options = {})
-      git_options = {:bare => true}.merge(git_options)
-      git = Git.new(path)
-      git.fs_mkdir('..')
-      git.init(git_options)
-      self.new(path, repo_options)
-    end
-
-    # Fork a bare git repository from this repo
-    #   +path+ is the full path of the new repo (traditionally ends with /<name>.git)
-    #   +options+ is any additional options to the git clone command (:bare and :shared are true by default)
-    #
-    # Returns Grit::Repo (the newly forked repo)
-    def fork_bare(path, options = {})
-      default_options = {:bare => true, :shared => true}
-      real_options = default_options.merge(options)
-      Git.new(path).fs_mkdir('..')
-      self.git.clone(real_options, self.path, path)
-      Repo.new(path)
-    end
-
-    # Fork a bare git repository from another repo
-    #   +path+ is the full path of the new repo (traditionally ends with /<name>.git)
-    #   +options+ is any additional options to the git clone command (:bare and :shared are true by default)
-    #
-    # Returns Grit::Repo (the newly forked repo)
-    def fork_bare_from(path, options = {})
-      default_options = {:bare => true, :shared => true}
-      real_options = default_options.merge(options)
-      Git.new(self.path).fs_mkdir('..')
-      self.git.clone(real_options, path, self.path)
-      Repo.new(self.path)
     end
 
     # Archive the given treeish
@@ -422,11 +651,9 @@ module Grit
     # Returns Array[String] (pathnames of alternates)
     def alternates
       alternates_path = "objects/info/alternates"
-      if self.git.fs_exist?(alternates_path)
-        self.git.fs_read(alternates_path).strip.split("\n")
-      else
-        []
-      end
+      self.git.fs_read(alternates_path).strip.split("\n")
+    rescue Errno::ENOENT
+      []
     end
 
     # Sets the alternates

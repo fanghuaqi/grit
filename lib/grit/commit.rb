@@ -1,7 +1,10 @@
 module Grit
 
   class Commit
+    extend Lazy
+
     attr_reader :id
+    attr_reader :repo
     lazy_reader :parents
     lazy_reader :tree
     lazy_reader :author
@@ -10,7 +13,31 @@ module Grit
     lazy_reader :committed_date
     lazy_reader :message
     lazy_reader :short_message
-    lazy_reader :author_string
+
+    # Parses output from the `git-cat-file --batch'.
+    #
+    # repo   - Grit::Repo instance.
+    # sha    - String SHA of the Commit.
+    # size   - Fixnum size of the object.
+    # object - Parsed String output from `git cat-file --batch`.
+    #
+    # Returns an Array of Grit::Commit objects.
+    def self.parse_batch(repo, sha, size, object)
+      info, message = object.split("\n\n", 2)
+
+      lines = info.split("\n")
+      tree = lines.shift.split(' ', 2).last
+      parents = []
+      parents << lines.shift[7..-1] while lines.first[0, 6] == 'parent'
+      author,    authored_date  = Grit::Commit.actor(lines.shift)
+      committer, committed_date = Grit::Commit.actor(lines.shift)
+
+      Grit::Commit.new(
+        repo, sha, parents, tree,
+        author, authored_date,
+        committer, committed_date,
+        message.to_s.split("\n"))
+    end
 
     # Instantiate a new Commit
     #   +id+ is the id of the commit
@@ -33,7 +60,7 @@ module Grit
       @committer = committer
       @committed_date = committed_date
       @message = message.join("\n")
-      @short_message = message.select { |x| !x.strip.empty? }[0] || ''
+      @short_message = message.find { |x| !x.strip.empty? } || ''
     end
 
     def id_abbrev
@@ -121,8 +148,13 @@ module Grit
         parents = []
         parents << lines.shift.split.last while lines.first =~ /^parent/
 
-        author, authored_date = self.actor(lines.shift)
-        committer, committed_date = self.actor(lines.shift)
+        author_line = lines.shift
+        author_line << lines.shift if lines[0] !~ /^committer /
+        author, authored_date = self.actor(author_line)
+
+        committer_line = lines.shift
+        committer_line << lines.shift if lines[0] && lines[0] != '' && lines[0] !~ /^encoding/
+        committer, committed_date = self.actor(committer_line)
 
         # not doing anything with this yet, but it's sometimes there
         encoding = lines.shift.split.last if lines.first =~ /^encoding/
@@ -140,16 +172,18 @@ module Grit
       commits
     end
 
-    # Show diffs between two trees:
-    #   +repo+ is the Repo
-    #   +a+ is a named commit
-    #   +b+ is an optional named commit.  Passing an array assumes you
-    #     wish to omit the second named commit and limit the diff to the
-    #     given paths.
-    #   +paths* is an array of paths to limit the diff.
+    # Show diffs between two trees.
+    #
+    # repo    - The current Grit::Repo instance.
+    # a       - A String named commit.
+    # b       - An optional String named commit.  Passing an array assumes you
+    #           wish to omit the second named commit and limit the diff to the
+    #           given paths.
+    # paths   - An optional Array of paths to limit the diff.
+    # options - An optional Hash of options.  Merged into {:full_index => true}.
     #
     # Returns Grit::Diff[] (baked)
-    def self.diff(repo, a, b = nil, paths = [])
+    def self.diff(repo, a, b = nil, paths = [], options = {})
       if b.is_a?(Array)
         paths = b
         b     = nil
@@ -157,13 +191,14 @@ module Grit
       paths.unshift("--") unless paths.empty?
       paths.unshift(b)    unless b.nil?
       paths.unshift(a)
-      text = repo.git.diff({:full_index => true}, *paths)
+      options = {:full_index => true}.update(options)
+      text    = repo.git.diff(options, *paths)
       Diff.list_from_string(repo, text)
     end
 
     def show
       if parents.size > 1
-        diff = @repo.git.native("diff #{parents[0].id}...#{parents[1].id}", {:full_index => true})
+        diff = @repo.git.native(:diff, {:full_index => true}, "#{parents[0].id}...#{parents[1].id}")
       else
         diff = @repo.git.show({:full_index => true, :pretty => 'raw'}, @id)
       end
@@ -176,11 +211,16 @@ module Grit
       Diff.list_from_string(@repo, diff)
     end
 
-    def diffs
+    # Shows diffs between the commit's parent and the commit.
+    #
+    # options - An optional Hash of options, passed to Grit::Commit.diff.
+    #
+    # Returns Grit::Diff[] (baked)
+    def diffs(options = {})
       if parents.empty?
         show
       else
-        self.class.diff(@repo, parents.first.id, @id)
+        self.class.diff(@repo, parents.first.id, @id, [], options)
       end
     end
 
@@ -203,6 +243,32 @@ module Grit
 
     def to_patch
       @repo.git.format_patch({'1' => true, :stdout => true}, to_s)
+    end
+
+    def notes
+      ret = {}
+      notes = Note.find_all(@repo)
+      notes.each do |note|
+        if n = note.commit.tree/(self.id)
+          ret[note.name] = n.data
+        end
+      end
+      ret
+    end
+
+    # Calculates the commit's Patch ID. The Patch ID is essentially the SHA1
+    # of the diff that the commit is introducing.
+    #
+    # Returns the 40 character hex String if a patch-id could be calculated
+    #   or nil otherwise.
+    def patch_id
+      show = @repo.git.show({}, @id)
+      patch_line = @repo.git.native(:patch_id, :input => show)
+      if patch_line =~ /^([0-9a-f]{40}) [0-9a-f]{40}\n$/
+        $1
+      else
+        nil
+      end
     end
 
     # Pretty object inspection

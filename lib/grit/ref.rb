@@ -63,12 +63,16 @@ module Grit
     def self.current(repo, options = {})
       head = repo.git.fs_read('HEAD').chomp
       if /ref: refs\/heads\/(.*)/.match(head)
-        self.new($1, repo.git.rev_parse(options, 'HEAD'))
+        id = repo.git.rev_parse(options, 'HEAD')
+        commit = Commit.create(repo, :id => id)
+        self.new($1, commit)
       end
     end
 
   end # Head
 
   class Remote < Ref; end
+
+  class Note < Ref; end
 
 end # Grit

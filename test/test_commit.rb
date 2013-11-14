@@ -80,6 +80,13 @@ class TestCommit < Test::Unit::TestCase
     assert_equal 'lib/grit/commit.rb', diffs.first.a_path
   end
 
+  def test_diff_with_options
+    Git.any_instance.expects(:diff).
+      with({:full_index => true, :M => true}, 'master').
+      returns(fixture('diff_mode_only'))
+    Commit.diff(@r, 'master', nil, [], :M => true)
+  end
+
   # diffs
   def test_diffs
     # git diff --full-index 91169e1f5fa4de2eaea3f176461f5dc784796769 > test/fixtures/diff_p
@@ -152,6 +159,16 @@ class TestCommit < Test::Unit::TestCase
     assert_equal '100755', diffs[0].b_mode
   end
 
+  def test_diffs_with_options
+    Git.any_instance.expects(:diff).
+      with({:full_index => true, :M => true}, 
+        '038af8c329ef7c1bae4568b98bd5c58510465493', 
+        '91169e1f5fa4de2eaea3f176461f5dc784796769').
+      returns(fixture('diff_mode_only'))
+    @c = Commit.create(@r, :id => '91169e1f5fa4de2eaea3f176461f5dc784796769')
+    @c.diffs :M => true
+  end
+
   # to_s
 
   def test_to_s
@@ -173,7 +190,14 @@ class TestCommit < Test::Unit::TestCase
     assert patch.include?('test/test_reality.rb |   30 +++++++++++++++---------------')
     assert patch.include?('@@ -1,17 +1,17 @@')
     assert patch.include?('+#     recurse(t)')
-    assert patch.include?("1.6.")
+    assert patch.include?("1.7.")
+  end
+
+  # patch_id
+  
+  def test_patch_id
+    @c = Commit.create(@r, :id => '80f136f500dfdb8c3e8abf4ae716f875f0a1b57f')
+    assert_equal '9450b04e4f83ad0067199c9e9e338197d1835cbb', @c.patch_id
   end
 
   # inspect
