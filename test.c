@@ -2,8 +2,10 @@
 
 void printnum(int num)
 {
-    printf("Num is %d\n", num);
+    printf("Num is %d\n\r", num);
+    printf("Num^2 is %d\n\r", num*num);    
 }
+
 
 void main(void)
 {
